@@ -1,0 +1,9 @@
+{
+    "files.associations": {
+        "platform.h": "c",
+        "xil_io.h": "c",
+        "eth_receive_cmd.h": "c",
+        "tcp.h": "c",
+        "xil_cache.h": "c"
+    }
+}

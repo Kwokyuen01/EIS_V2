@@ -1,0 +1,32 @@
+# Exclude everything
+*
+
+# But not these directories
+!.gitignore
+!ad9238_ddr3_tcp.srcs/
+!ad9238_ddr3_tcp.sdk/
+!ip_repo/   
+
+!ad9238_ddr3_tcp.xpr
+# Allow files in ad9238_ddr3_tcp.srcs
+!ad9238_ddr3_tcp.srcs/**
+
+# Allow files in ad9238_ddr3_tcp.sdk
+!ad9238_ddr3_tcp.sdk/**
+
+#Allow files in ip_repo
+!ip_repo/**
+
+# Still ignore some file types even in allowed directories
+**/*.log
+**/*.jou
+**/*.str
+**/*.debug
+**/*.zip
+**/*.tmp
+**/*.rst
+**/*.os
+**/*.o
+**/*.d
+**/*.pyc
+**/_pycache__/
