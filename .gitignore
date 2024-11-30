@@ -1,13 +1,14 @@
 # Exclude everything
 *
 
-# But not these directories
+# But not these directories and files
 !.gitignore
+!README.md
 !ad9238_ddr3_tcp.srcs/
 !ad9238_ddr3_tcp.sdk/
 !ip_repo/   
-
 !ad9238_ddr3_tcp.xpr
+
 # Allow files in ad9238_ddr3_tcp.srcs
 !ad9238_ddr3_tcp.srcs/**
 
