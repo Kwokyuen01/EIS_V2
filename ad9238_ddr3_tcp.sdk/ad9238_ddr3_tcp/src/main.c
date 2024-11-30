@@ -50,6 +50,8 @@
 #endif
 #endif
 
+#include "FFT/FFT.h"     // 添加FFT头文件
+
 /* defined by each RAW mode application */
 void print_app_header();
 int start_application();
@@ -125,6 +127,34 @@ int ProgramSfpPhy(void);
 int IicPhyReset(void);
 #endif
 #endif
+
+// DDS频率表
+static const char* dds_freq_table[] = {
+    "30K", "21K", "15K", "10K", "7K", "4.5K", "3K", "2.1K", "1.5K", "1K",
+    "700Hz", "450Hz", "300Hz", "210Hz", "150Hz", "100Hz", "70Hz", "45Hz", "30Hz", "21Hz",
+    "10Hz", "7Hz", "4.5Hz", "3Hz", "2.1Hz", "1Hz", "0.7Hz", "0.45Hz", "0.3Hz", "0.21Hz", "0.1Hz"
+};
+
+// 定义FFT通道
+FFTchannel ch1, ch2;  // 定义两个FFT通道
+
+// FFT相关参数
+static int NPT = 4096;           // FFT点数
+static float Fs = 50000000.0f;   // 默认采样率50MHz
+static int adc_bit = 14;         // ADC位数14位
+static float adc_max = 3.3f;     // ADC满量程3.3V
+static int THD_max = 5;          // 最大谐波次数
+
+// 更新采样率函数
+void update_sampling_rate(uint8_t dds_mode) {
+    // 根据DDS频率设置采样率
+    // 1K以上使用50MSPS，1K以下使用500KSPS
+    if (dds_mode <= 9) { // 1K及以上频率(30K到1K)
+        Fs = 50000000.0f;  // 50MSPS
+    } else {              // 1K以下频率
+        Fs = 500000.0f;   // 500KSPS
+    }
+}
 
 int main()
 {
@@ -238,6 +268,11 @@ int main()
 	/* start the application (web server, rxtest, txtest, etc..) */
 	start_application();
 
+	// FFT初始化，在进入主循环前完成
+	FFT_Init(&NPT, &Fs, adc_bit, adc_max, THD_max);
+	// 设置窗函数：频率用汉宁窗，幅值用平顶窗，THD用凯泽窗
+	SetWindow(Hanning_win, Flattop_win, Kaiser_win);
+
 	/* receive and process packets */
 	while (1) {
 		if (TcpFastTmrFlag) {
@@ -253,6 +288,16 @@ int main()
 		if(recv_flag) {
 			buff = tcp_sndbuf(serpcb);
 			if(buff >= num){
+				// 将DDR数据复制到FFT通道1的缓冲区
+				uint16_t* ddr_data = (uint16_t*)0x1800000;
+				memcpy(ch1.adc_buf, ddr_data, num);  // 直接复制整块数据
+                
+                // 执行FFT并打印结果
+                UserFFT(&ch1);
+                xil_printf("CH1 FFT: f=%.1fHz, vp=%.3fV, dc=%.3fV\r\n", 
+                          ch1.f, ch1.vp, ch1.dc);
+
+				// 发送原始数据
 				tcp_write(serpcb,(void*)(0x1800000 + uiIdx),num,1);
 				tcp_output(serpcb);
 				uiIdx = 0;

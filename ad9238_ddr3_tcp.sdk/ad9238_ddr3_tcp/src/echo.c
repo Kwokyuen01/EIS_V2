@@ -35,10 +35,15 @@
 #include "eth_receive_cmd.h"
 #include "xil_io.h"
 #include "xtime_l.h"
+#include "FFT/FFT.h"
 
 #if defined (__arm__) || defined (__aarch64__)
 #include "xil_printf.h"
 #endif
+
+// 声明外部变量和函数
+extern void update_sampling_rate(uint8_t dds_mode);
+extern float Fs;
 
 #define ADC_Data_Addr					0x01800000
 #define XSLCR_BASEADDR					0xF8000000U
@@ -80,12 +85,8 @@ int num = 0;
 uint8_t recv_flag = 0;
 int data_buf[32768/4];
 
-// DDS频率表
-static const char* dds_freq_table[] = {
-    "30K", "21K", "15K", "10K", "7K", "4.5K", "3K", "2.1K", "1.5K", "1K",
-    "700Hz", "450Hz", "300Hz", "210Hz", "150Hz", "100Hz", "70Hz", "45Hz", "30Hz", "21Hz",
-    "10Hz", "7Hz", "4.5Hz", "3Hz", "2.1Hz", "1Hz", "0.7Hz", "0.45Hz", "0.3Hz", "0.21Hz", "0.1Hz"
-};
+extern FFTchannel ch1, ch2;  // 引用main.c中定义的FFT通道
+extern const char* dds_freq_table[];  // 引用main.c中定义的频率表
 
 // TCP基础打印函数
 err_t tcp_print(const void* data, tcp_data_type_t type, uint32_t length) 
@@ -223,8 +224,12 @@ err_t recv_callback(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err)
             
             // 检查是否为DDS相关命令
             if(((data[0] & 0xFF00) == 0x400) || ((data[0] & 0xFF00) == 0x500)){
-                uint8_t mode = ((data[0] & 0xFF00) == 0x400) ? (data[1]&0xFFFFFF00)>>8 : 0;
-                xil_printf("DDS %s: %s\r\n", ((data[0] & 0xFF00) == 0x400) ? "Set" : "Reset", dds_freq_table[mode]);
+                uint8_t mode = (data[1]&0xFFFFFF00)>>8;
+                update_sampling_rate(mode);
+                xil_printf("DDS %s: %s, Fs=%.0f SPS\r\n", 
+                          ((data[0] & 0xFF00) == 0x400) ? "Set" : "Reset", 
+                          dds_freq_table[mode], 
+                          Fs);
             }
         }
     }
