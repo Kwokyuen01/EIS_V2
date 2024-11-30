@@ -28,11 +28,13 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdarg.h>
 #include "lwip/err.h"
 #include "lwip/tcp.h"
 #include "sleep.h"
 #include "eth_receive_cmd.h"
 #include "xil_io.h"
+#include "xtime_l.h"
 
 #if defined (__arm__) || defined (__aarch64__)
 #include "xil_printf.h"
@@ -46,6 +48,29 @@
 #define XSLCR_LOCK_CODE		    		0x0000767BU
 #define XSLCR_UNLOCK_CODE				0x0000DF0DU
 
+// 定义固定帧头
+#define FRAME_HEADER_0    0x28
+#define FRAME_HEADER_1    0x01
+#define FRAME_HEADER_2    0x00
+
+// 数据类型定义
+typedef enum {
+    TCP_TYPE_STRING = 0x02,    // 字符串
+    TCP_TYPE_INT32  = 0x03,    // 32位整数
+    TCP_TYPE_FLOAT  = 0x04,    // 浮点数
+    TCP_TYPE_HEX    = 0x05,    // 16进制
+    TCP_TYPE_ADC    = 0x06,    // ADC数据
+    TCP_TYPE_DEBUG  = 0x07     // 调试信息
+} tcp_data_type_t;
+
+// 数据包头结构 (4字节)
+typedef struct {
+    uint8_t header0;    // 固定为0x28
+    uint8_t header1;    // 固定为0x01
+    uint8_t header2;    // 固定为0x00
+    uint8_t type;       // 数据类型
+} __attribute__((packed)) tcp_packet_header_t;
+
 uint8_t ADC_Data[200*1024*1024/8];
 u32 uiIdx = 0;
 struct tcp_pcb *pcb;
@@ -55,6 +80,101 @@ int num = 0;
 uint8_t recv_flag = 0;
 int data_buf[32768/4];
 
+// DDS频率表
+static const char* dds_freq_table[] = {
+    "30K", "21K", "15K", "10K", "7K", "4.5K", "3K", "2.1K", "1.5K", "1K",
+    "700Hz", "450Hz", "300Hz", "210Hz", "150Hz", "100Hz", "70Hz", "45Hz", "30Hz", "21Hz",
+    "10Hz", "7Hz", "4.5Hz", "3Hz", "2.1Hz", "1Hz", "0.7Hz", "0.45Hz", "0.3Hz", "0.21Hz", "0.1Hz"
+};
+
+// TCP基础打印函数
+err_t tcp_print(const void* data, tcp_data_type_t type, uint32_t length) 
+{
+    if (!data) {
+        return ERR_VAL;
+    }
+    
+    // 准备数据包头
+    tcp_packet_header_t header;
+    header.header0 = FRAME_HEADER_0;
+    header.header1 = FRAME_HEADER_1;
+    header.header2 = FRAME_HEADER_2;
+    header.type = type;
+    
+    // 发送头部
+    err_t err = tcp_write(serpcb, &header, sizeof(tcp_packet_header_t), TCP_WRITE_FLAG_COPY);
+    if (err != ERR_OK) return err;
+    tcp_output(serpcb);
+    
+    // 发送数据部分
+    u32_t buff = tcp_sndbuf(serpcb);
+    uint32_t sent = 0;
+    
+    while (sent < length) {
+        buff = tcp_sndbuf(serpcb);
+        if (buff == 0) continue;
+        
+        uint32_t remain = length - sent;
+        uint32_t to_send = (buff > remain) ? remain : buff;
+        
+        err = tcp_write(serpcb, 
+                       (const uint8_t*)data + sent, 
+                       to_send, 
+                       TCP_WRITE_FLAG_COPY);
+        
+        if (err == ERR_OK) {
+            tcp_output(serpcb);
+            sent += to_send;
+        } else {
+            return err;
+        }
+    }
+    
+    return ERR_OK;
+}
+
+// 字符串打印函数
+err_t tcp_print_string(const char* str) {
+    return tcp_print(str, TCP_TYPE_STRING, strlen(str) + 1);
+}
+
+// 浮点数打印函数
+err_t tcp_print_float(const float* value) {
+    return tcp_print(value, TCP_TYPE_FLOAT, sizeof(float));
+}
+
+// 整数打印函数
+err_t tcp_print_int32(const int32_t* value) {
+    return tcp_print(value, TCP_TYPE_INT32, sizeof(int32_t));
+}
+
+// 十六进制数据打印函数
+err_t tcp_print_hex(const void* data, uint32_t len) {
+    return tcp_print(data, TCP_TYPE_HEX, len);
+}
+
+// ADC数据打印函数
+err_t tcp_print_adc(const void* data, uint32_t len) {
+    return tcp_print(data, TCP_TYPE_ADC, len);
+}
+
+// 格式化打印函数
+err_t tcp_printf(const char* format, ...) {
+    char buffer[256];
+    va_list args;
+    
+    // 串口打印
+    va_start(args, format);
+    xil_printf(format, args);
+    va_end(args);
+    
+    // TCP打印
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    return tcp_print_string(buffer);
+}
+
 int transfer_data() {
 	return 0;
 }
@@ -62,66 +182,62 @@ int transfer_data() {
 void print_app_header()
 {
 #if (LWIP_IPV6==0)
-	xil_printf("\n\r\n\r----- ad9238_ddr3_tcp ------\n\r");
+    // 串口打印
+    xil_printf("\n\r\n\r----- ad9238_ddr3_tcp ------\n\r");
+    // TCP打印
+    tcp_print_string("\n\r\n\r----- ad9238_ddr3_tcp ------\n\r");
 #else
-	xil_printf("\n\r\n\r-----lwIPv6 TCP echo server ------\n\r");
+    xil_printf("\n\r\n\r-----lwIPv6 TCP echo server ------\n\r");
+    tcp_print_string("\n\r\n\r-----lwIPv6 TCP echo server ------\n\r");
 #endif
 }
 
-err_t recv_callback(void *arg, struct tcp_pcb *tpcb,
-                               struct pbuf *p, err_t err)
+err_t recv_callback(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err)
 {
-	int read_adc_data = 0;
-	int i;
-	uiIdx = 0;
+    int read_adc_data = 0;
+    int i;
+    uiIdx = 0;
 
-	/* do not read the packet if we are not in ESTABLISHED state */
-	if (!p) {
-		tcp_close(tpcb);
-		tcp_recv(tpcb, NULL);
-		return ERR_OK;
-	}
+    if (!p) {
+        tcp_close(tpcb);
+        tcp_recv(tpcb, NULL);
+        return ERR_OK;
+    }
 
-	/* indicate that the packet has been received */
-	tcp_recved(tpcb, p->len);
+    tcp_recved(tpcb, p->len);
 
-	//reset FCLK_CLK
-	Xil_Out32(XSLCR_UNLOCK_ADDR, XSLCR_UNLOCK_CODE);
-    Xil_Out32(XSLCR_FPGA_RST_CTRL_ADDR, 0x0F);
-    usleep(10);
-    Xil_Out32(XSLCR_FPGA_RST_CTRL_ADDR, 0x00);
-    Xil_Out32(XSLCR_LOCK_ADDR, XSLCR_LOCK_CODE);
+    if (tcp_sndbuf(tpcb) > p->len) {
+        for(i=0;i<4;i++){
+            data[0] = htonl(Xil_In32(p->payload+8*i));
+            data[1] = htonl(Xil_In32(p->payload + 8*i+4));
+            ETH_RECEIVE_CMD_mWriteReg(XPAR_ETH_RECEIVE_CMD_0_S00_AXI_BASEADDR,
+                                    ETH_RECEIVE_CMD_S00_AXI_SLV_REG0_OFFSET,data[0]);
+            ETH_RECEIVE_CMD_mWriteReg(XPAR_ETH_RECEIVE_CMD_0_S00_AXI_BASEADDR,
+                                    ETH_RECEIVE_CMD_S00_AXI_SLV_REG1_OFFSET,data[1]);
+            
+            // 检查是否为数据读取命令
+            if((data[0] & 0xFF00) == 0x200){
+                num = (data[0] & 0xFF)|((data[1]&0xFFFFFF00)>>8);
+                num = num*2;
+            }
+            
+            // 检查是否为DDS相关命令
+            if(((data[0] & 0xFF00) == 0x400) || ((data[0] & 0xFF00) == 0x500)){
+                uint8_t mode = ((data[0] & 0xFF00) == 0x400) ? (data[1]&0xFFFFFF00)>>8 : 0;
+                xil_printf("DDS %s: %s\r\n", ((data[0] & 0xFF00) == 0x400) ? "Set" : "Reset", dds_freq_table[mode]);
+            }
+        }
+    }
 
-    usleep(100);
-	/* echo back the payload */
-	/* in this case, we assume that the payload is < TCP_SND_BUF */
-	if (tcp_sndbuf(tpcb) > p->len) {
-		for(i=0;i<4;i++){
-			data[0] = htonl(Xil_In32(p->payload+8*i));
-			data[1] = htonl(Xil_In32(p->payload + 8*i+4));
-			ETH_RECEIVE_CMD_mWriteReg(XPAR_ETH_RECEIVE_CMD_0_S00_AXI_BASEADDR,ETH_RECEIVE_CMD_S00_AXI_SLV_REG0_OFFSET,data[0]);
-			ETH_RECEIVE_CMD_mWriteReg(XPAR_ETH_RECEIVE_CMD_0_S00_AXI_BASEADDR,ETH_RECEIVE_CMD_S00_AXI_SLV_REG1_OFFSET,data[1]);
-			if((data[0] & 0xFF00) == 0x200){
-				num = (data[0] & 0xFF)|((data[1]&0xFFFFFF00)>>8);
-				num = num*2;
-			}
-		}
-//		err = tcp_write(tpcb, p->payload, p->len, 1);
-	} else
-		xil_printf("no space in tcp_sndbuf\n\r");
+    while(!read_adc_data) {
+        read_adc_data = ETH_RECEIVE_CMD_mReadReg(XPAR_ETH_RECEIVE_CMD_0_S00_AXI_BASEADDR,
+                                               ETH_RECEIVE_CMD_S00_AXI_SLV_REG3_OFFSET);
+    }
 
-	while(!read_adc_data) {
-		read_adc_data = ETH_RECEIVE_CMD_mReadReg(XPAR_ETH_RECEIVE_CMD_0_S00_AXI_BASEADDR,ETH_RECEIVE_CMD_S00_AXI_SLV_REG3_OFFSET);
-	}
-
-	recv_flag = 1;
-
-	/* free the received pbuf */
-	pbuf_free(p);
-
-	return ERR_OK;
+    recv_flag = 1;
+    pbuf_free(p);
+    return ERR_OK;
 }
-
 
 err_t tcp_write_over(void *arg, struct tcp_pcb *tpcb)
 {
